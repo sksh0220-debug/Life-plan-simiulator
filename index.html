@@ -1,0 +1,509 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DesignEng LifePlan Simulator - 製造業設計職向けライフプランシミュレーター</title>
+  <meta name="description" content="製造業の設計職に特化したライフプランシミュレーター。残業収入や技術資格を考慮した資産推移を可視化します。">
+  
+  <!-- React & ReactDOM -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  
+  <!-- Babel Standalone (JSX変換用) -->
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  
+  <!-- Recharts (グラフライブラリ) - 修正版 -->
+  <script src="https://cdn.jsdelivr.net/npm/recharts@2.5.0/dist/Recharts.js"></script>
+  
+  <style>
+    body {
+      margin: 0;
+      padding: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Helvetica", "Arial", sans-serif;
+    }
+    #root {
+      width: 100%;
+      min-height: 100vh;
+    }
+    /* ローディング表示 */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100vh;
+      font-size: 18px;
+      color: #6c63ff;
+    }
+  </style>
+</head>
+<body>
+  <div id="root">
+    <div class="loading">読み込み中...</div>
+  </div>
+  
+  <script type="text/babel">
+    const { useState, useMemo, useEffect, useRef } = React;
+    const { Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, ReferenceLine, Area, AreaChart } = Recharts;
+
+const OVERTIME_RATES = [
+  { label: "残業なし", ratio: 0 },
+  { label: "余裏ある期間", ratio: 0.05 },
+  { label: "通常期", ratio: 0.12 },
+  { label: "繁忙期", ratio: 0.25 },
+  { label: "激しい繁忙期", ratio: 0.38 },
+];
+
+const RETIREMENT_AGE = 65;
+
+function useWindowWidth() {
+  const [w, setW] = useState(typeof window !== "undefined" ? window.innerWidth : 800);
+  useEffect(() => {
+    const fn = () => setW(window.innerWidth);
+    window.addEventListener("resize", fn);
+    fn();
+    return () => window.removeEventListener("resize", fn);
+  }, []);
+  return w;
+}
+
+function NumInput({ label, value, onChange, unit, min, max, step = 1, note, t, isMobile }) {
+  const [raw, setRaw] = useState(String(value));
+  const focused = useRef(false);
+  useEffect(() => { if (!focused.current) setRaw(String(value)); }, [value]);
+
+  const handleFocus = () => { focused.current = true; };
+  const handleChange = (e) => {
+    const v = e.target.value;
+    setRaw(v);
+    if (v === "" || v === "-") return;
+    const num = Number(v);
+    if (!isNaN(num)) onChange(num);
+  };
+  const handleBlur = () => {
+    focused.current = false;
+    if (raw === "" || raw === "-") {
+      const fallback = min ?? 0;
+      onChange(fallback);
+      setRaw(String(fallback));
+    }
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+        <span style={{ fontSize: isMobile ? 11 : 12, fontWeight: 600, color: t.textSub, letterSpacing: "0.04em" }}>{label}</span>
+        {note && <span style={{ fontSize: 10, color: t.accent, background: t.accentDim, padding: "2px 7px", borderRadius: 10 }}>{note}</span>}
+      </div>
+      <div style={{ display: "flex", alignItems: "center", background: t.input, border: `1px solid ${t.inputBorder}`, borderRadius: 8, overflow: "hidden" }}>
+        <input
+          type="number"
+          value={raw}
+          min={min} max={max} step={step}
+          onChange={handleChange}
+          onBlur={handleBlur}
+          onFocus={handleFocus}
+          style={{ flex: 1, background: "transparent", border: "none", outline: "none", color: t.text, fontSize: isMobile ? 16 : 15, fontWeight: 600, padding: isMobile ? "12px 10px" : "9px 10px", fontFamily: "'SF Mono', 'Fira Code', monospace" }}
+        />
+        {unit && <span style={{ fontSize: 11, color: t.textSub, padding: "0 10px", whiteSpace: "nowrap" }}>{unit}</span>}
+      </div>
+    </div>
+  );
+}
+
+function Toggle({ label, value, onChange, note, t, isMobile }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: isMobile ? "4px 0" : 0 }}>
+      <div>
+        <span style={{ fontSize: 13, color: t.text, fontWeight: 500 }}>{label}</span>
+        {note && <span style={{ fontSize: 11, color: t.textSub, marginLeft: 6 }}>{note}</span>}
+      </div>
+      <div
+        onClick={() => onChange(!value)}
+        style={{ width: 46, height: 26, borderRadius: 13, background: value ? t.accent : t.inputBorder, cursor: "pointer", position: "relative", transition: "background 0.2s", flexShrink: 0 }}
+      >
+        <div style={{ width: 20, height: 20, borderRadius: 10, background: "#fff", position: "absolute", top: 3, left: value ? 23 : 3, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.3)" }} />
+      </div>
+    </div>
+  );
+}
+
+function Section({ title, icon, children, t }) {
+  return (
+    <div style={{ background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 14, padding: "20px 22px", display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, borderBottom: `1px solid ${t.cardBorder}`, paddingBottom: 12 }}>
+        <span style={{ fontSize: 16 }}>{icon}</span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: t.text, letterSpacing: "0.04em" }}>{title}</span>
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function AccSection({ id, title, icon, children, t, open, onToggle }) {
+  return (
+    <div style={{ background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 14, overflow: "hidden" }}>
+      <div
+        onClick={() => onToggle(id)}
+        style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 18px", cursor: "pointer", userSelect: "none" }}
+      >
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <span style={{ fontSize: 16 }}>{icon}</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: t.text }}>{title}</span>
+        </div>
+        <span style={{ fontSize: 10, color: t.textSub, transition: "transform 0.2s", transform: open ? "rotate(180deg)" : "rotate(0deg)", display: "inline-block" }}>▼</span>
+      </div>
+      {open && (
+        <div style={{ padding: "0 18px 18px", display: "flex", flexDirection: "column", gap: 14 }}>
+          {children}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CustomTooltip({ active, payload, label, t, dark }) {
+  if (!active || !payload) return null;
+  return (
+    <div style={{ background: dark ? "#1e2130" : "#fff", border: `1px solid ${t.cardBorder}`, borderRadius: 10, padding: "10px 14px", boxShadow: "0 4px 16px rgba(0,0,0,0.25)", minWidth: 130 }}>
+      <div style={{ fontSize: 12, fontWeight: 700, color: t.accent, marginBottom: 6 }}>{label}歳</div>
+      {payload.map((p, i) => (
+        <div key={i} style={{ fontSize: 11, color: p.color, display: "flex", justifyContent: "space-between", gap: 12, padding: "1.5px 0" }}>
+          <span>{p.name}</span>
+          <span style={{ fontFamily: "'SF Mono', monospace", fontWeight: 600 }}>{Number(p.value).toLocaleString()}万</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function App() {
+  const width = useWindowWidth();
+  const isMobile = width < 680;
+  const [dark, setDark] = useState(true);
+
+  const [age, setAge] = useState(32);
+  const [salary, setSalary] = useState(5200000);
+  const [savings, setSavings] = useState(1200000);
+  const [overtimeIdx, setOvertimeIdx] = useState(2);
+  const [investAmount, setInvestAmount] = useState(30000);
+  const [returnRate, setReturnRate] = useState(5);
+  const [useNISA, setUseNISA] = useState(true);
+  const [annualRaise, setAnnualRaise] = useState(2.5);
+  const [livingCost, setLivingCost] = useState(3200000);
+
+  const [tab, setTab] = useState("input");
+  const [openSections, setOpenSections] = useState({ basic: true, career: true, invest: true });
+  const toggleSection = (k) => setOpenSections((p) => ({ ...p, [k]: !p[k] }));
+
+  const simulation = useMemo(() => {
+    const years = RETIREMENT_AGE - age;
+    if (years <= 0) return { data: [], summary: null };
+
+    const overtimeRatio = OVERTIME_RATES[overtimeIdx].ratio;
+    const rate = returnRate / 100;
+
+    let currentSalary = salary;
+    let assets = savings;
+    let investedTotal = 0;
+    let investGain = 0;
+    const data = [];
+
+    data.push({
+      age,
+      assets: Math.round(assets / 10000),
+      invested: 0,
+      gain: 0,
+    });
+
+    for (let y = 1; y <= years; y++) {
+      if (y > 1) currentSalary *= 1 + annualRaise / 100;
+
+      const overtimeIncome = currentSalary * overtimeRatio;
+      const totalAnnualIncome = currentSalary + overtimeIncome;
+      const takeHome = totalAnnualIncome * 0.75;
+      const annualInvest = investAmount * 12;
+      const annualSavings = Math.max(0, takeHome - livingCost - annualInvest);
+
+      const prevGainBase = investedTotal + investGain;
+      const yearGain = prevGainBase * rate;
+      investedTotal += annualInvest;
+      investGain += yearGain;
+      assets += annualSavings + yearGain;
+
+      data.push({
+        age: age + y,
+        assets: Math.round(assets / 10000),
+        invested: Math.round(investedTotal / 10000),
+        gain: Math.round(investGain / 10000),
+      });
+    }
+
+    const finalAssets = assets;
+    const target = 20000000;
+    const coverage = finalAssets / target;
+    const advices = [];
+
+    if (coverage >= 1.5)
+      advices.push({ type: "success", title: "資産充足度：十分以上", body: `65歳時の推定資産は約${Math.round(finalAssets / 10000).toLocaleString()}万円で、目標の約${(coverage * 100).toFixed(0)}%をカバー。現在のペースで安心できます。` });
+    else if (coverage >= 1.0)
+      advices.push({ type: "ok", title: "資産充足度：目標達成可能", body: `推定資産は約${Math.round(finalAssets / 10000).toLocaleString()}万円で、カバー率約${(coverage * 100).toFixed(0)}%。現在の路線維持で対応可能です。` });
+    else if (coverage >= 0.7)
+      advices.push({ type: "warning", title: "資産充足度：要注意ゾーン", body: `カバー率約${(coverage * 100).toFixed(0)}%で、目標に約${Math.round((1 - coverage) * target / 10000).toLocaleString()}万円のギャップがあります。投資額の引き上げを検討してください。` });
+    else
+      advices.push({ type: "danger", title: "資産充足度：大幅な見直し必要", body: `カバー率が約${(coverage * 100).toFixed(0)}%で、現状ペースでは退職後の生活費を賄えない可能性があります。キャリアの見直しが急務です。` });
+
+    if (overtimeRatio >= 0.25)
+      advices.push({ type: "warning", title: "残業収入への依存が高い", body: "収入プランに残業収入が大きく含まれています。資格や副業による安定収入源の確保を検討しましょう。" });
+    if (!useNISA && investAmount > 0)
+      advices.push({ type: "info", title: "NISA枠の未活用", body: "現在の積立額はNISA枠（年間36万円）内に収まる可能性があります。NISA枠を活用すると売却時の利益が課税免除になります。" });
+    if (investAmount === 0)
+      advices.push({ type: "info", title: "少額からでも投資を開始", body: "月1万円でも開始するほど複利の効果は年齢が若いほど大きくなります。" });
+
+    return { data, summary: { finalAssets, coverage, advices } };
+  }, [age, salary, savings, overtimeIdx, investAmount, returnRate, useNISA, annualRaise, livingCost]);
+
+  const t = {
+    bg: dark ? "#0f1117" : "#f4f5f7",
+    card: dark ? "#1a1d27" : "#ffffff",
+    cardBorder: dark ? "#2a2d3a" : "#e2e4e8",
+    text: dark ? "#e8eaef" : "#1e2028",
+    textSub: dark ? "#7a7f94" : "#6b7080",
+    accent: "#6c63ff",
+    accentDim: dark ? "#6c63ff22" : "#6c63ff11",
+    input: dark ? "#242838" : "#f0f1f4",
+    inputBorder: dark ? "#3a3f55" : "#d8dbe3",
+    green: "#34c38f",
+    amber: "#f0ad4e",
+    red: "#e74c5e",
+    blue: "#5dade2",
+  };
+
+  const adviceColor = (type) => {
+    if (type === "success") return { bg: dark ? "#34c38f18" : "#34c38f10", border: "#34c38f", icon: "✓" };
+    if (type === "ok") return { bg: dark ? "#5dade218" : "#5dade210", border: "#5dade2", icon: "○" };
+    if (type === "warning") return { bg: dark ? "#f0ad4e18" : "#f0ad4e10", border: "#f0ad4e", icon: "△" };
+    if (type === "danger") return { bg: dark ? "#e74c5e18" : "#e74c5e10", border: "#e74c5e", icon: "✕" };
+    return { bg: dark ? "#6c63ff18" : "#6c63ff10", border: "#6c63ff", icon: "i" };
+  };
+
+  const inputPanelJSX = (() => {
+    const WrapProps = (id) => isMobile
+      ? { open: openSections[id], onToggle: toggleSection }
+      : {};
+    const Wrap = isMobile ? AccSection : Section;
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 12 : 18 }}>
+        <Wrap id="basic" title="基本情報" icon="👤" t={t} {...WrapProps("basic")}>
+          <NumInput label="現在の年齢" value={age} onChange={setAge} unit="歳" min={22} max={64} t={t} isMobile={isMobile} />
+          <NumInput label="現在の年収（税込）" value={salary} onChange={setSalary} unit="円" min={300000} max={20000000} step={100000} t={t} isMobile={isMobile} />
+          <NumInput label="現在の貯蓄額" value={savings} onChange={setSavings} unit="円" min={0} max={100000000} step={100000} t={t} isMobile={isMobile} />
+          <NumInput label="年間生活費" value={livingCost} onChange={setLivingCost} unit="円" min={1500000} max={10000000} step={100000} note="税後支出" t={t} isMobile={isMobile} />
+          <NumInput label="毎年の年収上昇率" value={annualRaise} onChange={setAnnualRaise} unit="%" min={0} max={10} step={0.5} note="昇給・昇進" t={t} isMobile={isMobile} />
+        </Wrap>
+
+        <Wrap id="career" title="設計職・技術キャリア" icon="⚙️" t={t} {...WrapProps("career")}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+            <span style={{ fontSize: isMobile ? 11 : 12, fontWeight: 600, color: t.textSub, letterSpacing: "0.04em" }}>残業の程度</span>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(100px, 1fr))", gap: 6 }}>
+              {OVERTIME_RATES.map((o, i) => (
+                <div
+                  key={i}
+                  onClick={() => setOvertimeIdx(i)}
+                  style={{
+                    padding: isMobile ? "10px 8px" : "8px 10px", borderRadius: 8, cursor: "pointer",
+                    border: `1.5px solid ${overtimeIdx === i ? t.accent : t.inputBorder}`,
+                    background: overtimeIdx === i ? t.accentDim : t.input, transition: "all 0.15s"
+                  }}
+                >
+                  <div style={{ fontSize: isMobile ? 11 : 11.5, fontWeight: 600, color: overtimeIdx === i ? t.accent : t.text }}>{o.label}</div>
+                  <div style={{ fontSize: 10, color: t.textSub, marginTop: 2, fontFamily: "monospace" }}>+{(o.ratio * 100).toFixed(0)}%</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </Wrap>
+
+        <Wrap id="invest" title="投資・資産形成" icon="📈" t={t} {...WrapProps("invest")}>
+          <NumInput label="投資信託の月積立額" value={investAmount} onChange={setInvestAmount} unit="円/月" min={0} max={200000} step={5000} t={t} isMobile={isMobile} />
+          <NumInput label="想定年利回り" value={returnRate} onChange={setReturnRate} unit="%" min={1} max={10} step={0.5} note="3〜7%が一般的" t={t} isMobile={isMobile} />
+          <Toggle label="NISA枠の活用" value={useNISA} onChange={setUseNISA} note="年間36万円" t={t} isMobile={isMobile} />
+        </Wrap>
+      </div>
+    );
+  })();
+
+  const resultPanelJSX = (() => {
+    const cov = simulation.summary?.coverage || 0;
+    const summaryCards = [
+      { label: "65歳時推定資産", value: `${Math.round((simulation.summary?.finalAssets || 0) / 10000).toLocaleString()}万円`, sub: `カバー率 ${(cov * 100).toFixed(0)}%`, color: cov >= 1 ? t.green : cov >= 0.7 ? t.amber : t.red, icon: "💰" },
+      { label: "投資可能年数", value: `${RETIREMENT_AGE - age}年`, sub: `${age}歳 → 65歳`, color: t.accent, icon: "📅" },
+      { label: "月投資額", value: `${investAmount.toLocaleString()}円`, sub: `年 ${(investAmount * 12).toLocaleString()}円`, color: t.blue, icon: "📈" },
+    ];
+
+    return (
+      <div style={{ display: "flex", flexDirection: "column", gap: isMobile ? 14 : 20 }}>
+        <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "repeat(3, 1fr)", gap: isMobile ? 8 : 12 }}>
+          {summaryCards.map((card, i) => (
+            isMobile ? (
+              <div key={i} style={{ background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", gap: 14 }}>
+                <div style={{ width: 40, height: 40, borderRadius: 10, background: card.color + "18", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <span style={{ fontSize: 18 }}>{card.icon}</span>
+                </div>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 10, color: t.textSub, fontWeight: 600, marginBottom: 2 }}>{card.label}</div>
+                  <div style={{ fontSize: 17, fontWeight: 700, color: card.color, fontFamily: "'SF Mono', monospace", whiteSpace: "nowrap" }}>{card.value}</div>
+                  <div style={{ fontSize: 10, color: t.textSub }}>{card.sub}</div>
+                </div>
+              </div>
+            ) : (
+              <div key={i} style={{ background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 12, padding: "14px 16px" }}>
+                <div style={{ fontSize: 10, color: t.textSub, textTransform: "uppercase", letterSpacing: "0.08em", fontWeight: 600, marginBottom: 6 }}>{card.label}</div>
+                <div style={{ fontSize: 20, fontWeight: 700, color: card.color, fontFamily: "'SF Mono', monospace", letterSpacing: "-0.02em" }}>{card.value}</div>
+                <div style={{ fontSize: 11, color: t.textSub, marginTop: 3 }}>{card.sub}</div>
+              </div>
+            )
+          ))}
+        </div>
+
+        <div style={{ background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 14, padding: isMobile ? "16px 10px" : "22px 24px" }}>
+          <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", justifyContent: "space-between", alignItems: isMobile ? "flex-start" : "center", marginBottom: 14, gap: 8 }}>
+            <div>
+              <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 700, color: t.text }}>資産推移グラフ</div>
+              <div style={{ fontSize: 10, color: t.textSub, marginTop: 1 }}>現在〜65歳までの年別予測（万円）</div>
+            </div>
+            <div style={{ display: "flex", gap: isMobile ? 10 : 14, flexWrap: "wrap" }}>
+              {[
+                { color: t.accent, label: "総資産" },
+                { color: t.green, label: "累計投資" },
+                { color: "#a78bfa", label: "投資利益" },
+              ].map((l, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                  <div style={{ width: 8, height: 8, borderRadius: 4, background: l.color }} />
+                  <span style={{ fontSize: 10, color: t.textSub }}>{l.label}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+          <ResponsiveContainer width="100%" height={isMobile ? 220 : 280}>
+            <AreaChart data={simulation.data} margin={{ top: 5, right: isMobile ? 4 : 10, left: isMobile ? -8 : 10, bottom: 0 }}>
+              <defs>
+                <linearGradient id="colorAssets" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={t.accent} stopOpacity={0.25} />
+                  <stop offset="95%" stopColor={t.accent} stopOpacity={0} />
+                </linearGradient>
+                <linearGradient id="colorInvested" x1="0" y1="0" x2="0" y2="1">
+                  <stop offset="5%" stopColor={t.green} stopOpacity={0.15} />
+                  <stop offset="95%" stopColor={t.green} stopOpacity={0} />
+                </linearGradient>
+              </defs>
+              <CartesianGrid strokeDasharray="3 3" stroke={dark ? "#2a2d3a" : "#eee"} />
+              <XAxis dataKey="age" tick={{ fontSize: isMobile ? 9 : 11, fill: t.textSub }} axisLine={{ stroke: t.cardBorder }} tickLine={false} interval={isMobile ? 4 : "preserveStartEnd"} />
+              <YAxis tick={{ fontSize: isMobile ? 9 : 11, fill: t.textSub }} axisLine={false} tickLine={false} tickFormatter={(v) => `${(v / 100).toFixed(0)}千万`} width={isMobile ? 42 : 55} />
+              <Tooltip content={<CustomTooltip t={t} dark={dark} />} />
+              <ReferenceLine y={2000} stroke={t.amber} strokeDasharray="4 4" strokeOpacity={0.5} label={isMobile ? undefined : { value: "目標: 2000万", position: "right", fontSize: 9, fill: t.amber }} />
+              <Area type="monotone" dataKey="assets" name="総資産" stroke={t.accent} strokeWidth={2.5} fill="url(#colorAssets)" dot={false} activeDot={{ r: 4, fill: t.accent }} />
+              <Area type="monotone" dataKey="invested" name="累計投資" stroke={t.green} strokeWidth={1.8} fill="url(#colorInvested)" dot={false} activeDot={{ r: 3, fill: t.green }} />
+              <Line type="monotone" dataKey="gain" name="投資利益" stroke="#a78bfa" strokeWidth={1.5} dot={false} activeDot={{ r: 3, fill: "#a78bfa" }} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+
+        <div style={{ background: t.card, border: `1px solid ${t.cardBorder}`, borderRadius: 14, padding: isMobile ? "16px 14px" : "22px 24px" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+            <div style={{ width: 28, height: 28, borderRadius: 7, background: "linear-gradient(135deg, #6c63ff, #a78bfa)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13 }}>💼</div>
+            <div>
+              <div style={{ fontSize: isMobile ? 13 : 14, fontWeight: 700, color: t.text }}>FPアドバイス</div>
+              <div style={{ fontSize: 10, color: t.textSub }}>「このままのペースで大丈夫か？」の判定</div>
+            </div>
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {(simulation.summary?.advices || []).map((a, i) => {
+              const ac = adviceColor(a.type);
+              return (
+                <div key={i} style={{ background: ac.bg, border: `1px solid ${ac.border}33`, borderLeft: `3px solid ${ac.border}`, borderRadius: 10, padding: isMobile ? "10px 12px" : "12px 14px", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <div style={{ width: 22, height: 22, borderRadius: 6, background: ac.border, color: "#fff", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 11, fontWeight: 700, flexShrink: 0 }}>{ac.icon}</div>
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: isMobile ? 12 : 13, fontWeight: 700, color: ac.border, marginBottom: 2 }}>{a.title}</div>
+                    <div style={{ fontSize: isMobile ? 11 : 12, color: t.text, lineHeight: 1.5 }}>{a.body}</div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={{ fontSize: 9.5, color: t.textSub, textAlign: "center", lineHeight: 1.6, padding: "0 4px" }}>
+          ※ 簡略化モデル（税後収入は75%で概算）。実際の税負担や社会保険費には個別の計算が必要です。<br />
+          ※ 退職後の年金収入は含まれていません。実際のライフプラン策定には個別のFP相談をお勧めします。
+        </div>
+      </div>
+    );
+  })();
+
+  return (
+    <div style={{ minHeight: "100vh", background: t.bg, color: t.text, fontFamily: "'Inter', 'Segoe UI', sans-serif", transition: "background 0.3s, color 0.3s", paddingBottom: isMobile ? 72 : 0 }}>
+      <div style={{ background: dark ? "#111420" : "#1a1d27", borderBottom: `1px solid ${t.cardBorder}`, padding: isMobile ? "10px 16px" : "14px 24px", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, zIndex: 10 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: isMobile ? 8 : 10 }}>
+          <div style={{ width: isMobile ? 30 : 34, height: isMobile ? 30 : 34, borderRadius: 8, background: "linear-gradient(135deg, #6c63ff, #a78bfa)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: isMobile ? 14 : 16 }}>📐</div>
+          <div>
+            <div style={{ fontSize: isMobile ? 14 : 15, fontWeight: 700, color: "#fff", letterSpacing: "-0.02em" }}>DesignEng LifePlan</div>
+            {!isMobile && <div style={{ fontSize: 10, color: "#6b7280", letterSpacing: "0.1em", textTransform: "uppercase" }}>Career Simulator</div>}
+          </div>
+        </div>
+        <div
+          onClick={() => setDark(!dark)}
+          style={{ width: 34, height: 34, borderRadius: 8, background: t.input, border: `1px solid ${t.inputBorder}`, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 16 }}
+        >
+          {dark ? "☀️" : "🌙"}
+        </div>
+      </div>
+
+      {isMobile ? (
+        <div style={{ padding: "12px 14px" }}>
+          {tab === "input" ? inputPanelJSX : resultPanelJSX}
+        </div>
+      ) : (
+        <div style={{ maxWidth: 1100, margin: "0 auto", padding: "24px 20px", display: "grid", gridTemplateColumns: "minmax(0, 380px) minmax(0, 1fr)", gap: 22, alignItems: "start" }}>
+          {inputPanelJSX}
+          {resultPanelJSX}
+        </div>
+      )}
+
+      {isMobile && (
+        <div style={{ position: "fixed", bottom: 0, left: 0, right: 0, background: dark ? "#111420ee" : "#ffffffee", backdropFilter: "blur(12px)", borderTop: `1px solid ${t.cardBorder}`, display: "flex", zIndex: 20 }}>
+          {[
+            { key: "input", label: "入力", icon: "✎" },
+            { key: "result", label: "結果", icon: "📊" },
+          ].map((tb) => (
+            <div
+              key={tb.key}
+              onClick={() => setTab(tb.key)}
+              style={{
+                flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 3,
+                padding: "10px 0 12px", cursor: "pointer",
+                borderTop: tab === tb.key ? `2.5px solid ${t.accent}` : "2.5px solid transparent",
+                transition: "border-color 0.2s"
+              }}
+            >
+              <span style={{ fontSize: 18 }}>{tb.icon}</span>
+              <span style={{ fontSize: 11, fontWeight: 600, color: tab === tb.key ? t.accent : t.textSub }}>{tb.label}</span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ライブラリの読み込みを待ってからレンダリング
+if (typeof Recharts !== 'undefined') {
+  const root = ReactDOM.createRoot(document.getElementById('root'));
+  root.render(<App />);
+} else {
+  console.error('Recharts が読み込めませんでした');
+}
+  </script>
+</body>
+</html>
